@@ -213,6 +213,13 @@ struct CollectiveMainloopFwdSm80 {
         int const* const seqused_k = nullptr;
         int const* const leftpad_k = nullptr;
         int const* const seqlens_rotary = nullptr;
+        // Dummy members for SM90+ sparse mask compatibility (unused on SM80)
+        Element const* const ptr_sink = nullptr;
+        int const* sparse_mask_fine = nullptr;
+        int sparse_mask_max_k_blocks = 0;
+        int sparse_mask_fine_q_stride = 0;
+        int sparse_mask_fine_k_stride = 0;
+        int total_q = 0;
     };
 
     // Device side kernel params
@@ -233,6 +240,9 @@ struct CollectiveMainloopFwdSm80 {
         StrideQK const stride_K_new;
         Element const* const ptr_V_new;
         StrideV const stride_V_new;
+        // Dummy for MLA Qv (unused on SM80)
+        Element const* const ptr_Qv = nullptr;
+        StrideQK const stride_Qv = {};
         Element const* const ptr_rotary_cos;
         ShapeRotary const shape_rotary;
         StrideRotary const stride_rotary_cos;
@@ -259,6 +269,15 @@ struct CollectiveMainloopFwdSm80 {
         int const* const seqused_k = nullptr;
         int const* const leftpad_k = nullptr;
         int const* const seqlens_rotary = nullptr;
+        // Dummy members for SM90+ sparse mask compatibility (unused on SM80)
+        Element const* const ptr_Qv = nullptr;
+        StrideQK const stride_Qv = {};
+        Element const* const ptr_sink = nullptr;
+        int const* sparse_mask_fine = nullptr;
+        int sparse_mask_max_k_blocks = 0;
+        int sparse_mask_fine_q_stride = 0;
+        int sparse_mask_fine_k_stride = 0;
+        int total_q = 0;
     };
 
     static Params
@@ -288,6 +307,7 @@ struct CollectiveMainloopFwdSm80 {
         return {args.ptr_Q, args.shape_Q, args.stride_Q, shape_Q_packed, stride_Q_packed,
                 args.ptr_K, args.shape_K, args.stride_K, args.ptr_V, args.headdim_v, args.stride_V,
                 args.ptr_K_new, args.shape_K_new, args.stride_K_new, args.ptr_V_new, args.stride_V_new,
+                args.ptr_Qv, args.stride_Qv,
                 args.ptr_rotary_cos, args.shape_rotary, args.stride_rotary_cos,
                 args.ptr_rotary_sin, args.stride_rotary_sin, args.is_rotary_interleaved,
                 args.ptr_pagetable, args.shape_pagetable, args.stride_pagetable,
@@ -301,7 +321,10 @@ struct CollectiveMainloopFwdSm80 {
                 !Split ? 1 : args.num_splits,
                 args.kv_batch_idx,
                 args.cu_seqlens_q, args.cu_seqlens_k, args.cu_seqlens_k_new,
-                args.seqused_q, args.seqused_k, args.leftpad_k, args.seqlens_rotary};
+                args.seqused_q, args.seqused_k, args.leftpad_k, args.seqlens_rotary,
+                args.ptr_Qv, args.stride_Qv, args.ptr_sink,
+                args.sparse_mask_fine, args.sparse_mask_max_k_blocks,
+                args.sparse_mask_fine_q_stride, args.sparse_mask_fine_k_stride, args.total_q};
     }
 
     template <typename SharedStorage, typename FrgTensorO, typename Softmax>

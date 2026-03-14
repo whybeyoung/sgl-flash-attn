@@ -89,6 +89,8 @@ def _flash_attn_forward(
     num_splits: int = 1,
     pack_gqa: Optional[bool] = None,
     sm_margin: int = 0,
+    sinks: Optional[torch.Tensor] = None,
+    sparse_mask_fine: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     q, k, k_new, v_new = [maybe_contiguous(x) for x in (q, k, k_new, v_new)]
     v = v.contiguous() if v.stride(-1) != 1 and v.stride(-3) != 1 else v
@@ -101,6 +103,7 @@ def _flash_attn_forward(
     ]
     rotary_cos, rotary_sin = [maybe_contiguous(x) for x in (rotary_cos, rotary_sin)]
     seqlens_rotary = maybe_contiguous(seqlens_rotary)
+    sparse_mask_fine = maybe_contiguous(sparse_mask_fine)
     out, softmax_lse, out_accum, softmax_lse_accum = flash_attn_3_gpu.fwd(
         q,
         k,
@@ -136,6 +139,8 @@ def _flash_attn_forward(
         num_splits,
         pack_gqa,
         sm_margin,
+        sinks,
+        sparse_mask_fine
     )
 
     if out_accum is None:
@@ -183,6 +188,8 @@ def _flash_attn_forward_fake(
     num_splits: int = 1,
     pack_gqa: Optional[bool] = None,
     sm_margin: int = 0,
+    sinks: Optional[List[torch.Tensor]] = None,
+    sparse_mask_fine: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Symbolic fake implementation of flash attention forward.
@@ -566,6 +573,8 @@ class FlashAttnFunc(torch.autograd.Function):
         deterministic=False,
         sm_margin=0,
         return_softmax=False,
+        sinks=None,
+        sparse_mask_fine=None
     ):
         if softmax_scale is None:
             softmax_scale = (q.shape[-1] + (qv.shape[-1] if qv is not None else 0)) ** (-0.5)
@@ -592,6 +601,8 @@ class FlashAttnFunc(torch.autograd.Function):
             num_splits=num_splits,
             pack_gqa=pack_gqa,
             sm_margin=sm_margin,
+            sinks=sinks,
+            sparse_mask_fine=sparse_mask_fine,
         )
         # ctx.save_for_backward(q, k, v, out_padded, softmax_lse)
         ctx.save_for_backward(q, k, v, out, softmax_lse)
@@ -662,6 +673,8 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         deterministic=False,
         sm_margin=0,
         return_softmax=False,
+        sinks=None,
+        sparse_mask_fine: Optional[torch.Tensor] = None,
     ):
         if softmax_scale is None:
             softmax_scale = (q.shape[-1] + (qv.shape[-1] if qv is not None else 0)) ** (-0.5)
@@ -692,6 +705,8 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             num_splits=num_splits,
             pack_gqa=pack_gqa,
             sm_margin=sm_margin,
+            sinks=sinks,
+            sparse_mask_fine=sparse_mask_fine,
         )
         # ctx.save_for_backward(q, k, v, out_padded, softmax_lse, cu_seqlens_q, cu_seqlens_k, seqused_q, seqused_k)
         ctx.save_for_backward(q, k, v, out, softmax_lse, cu_seqlens_q, cu_seqlens_k, seqused_q, seqused_k)
@@ -819,6 +834,8 @@ def flash_attn_func(
     deterministic=False,
     sm_margin=0,
     return_attn_probs=False,
+    sinks=None,
+    sparse_mask_fine=None
 ):
     """dropout_p should be set to 0.0 during evaluation
     Supports multi-query and grouped-query attention (MQA/GQA) by passing in KV with fewer heads
@@ -881,6 +898,8 @@ def flash_attn_func(
         deterministic,
         sm_margin,
         return_attn_probs,
+        sinks,
+        sparse_mask_fine,
     )
 
 
@@ -906,6 +925,8 @@ def flash_attn_varlen_func(
     deterministic=False,
     sm_margin=0,
     return_attn_probs=False,
+    sinks=None,
+    sparse_mask_fine: Optional[torch.Tensor] = None,
 ):
     return FlashAttnVarlenFunc.apply(
         q,
@@ -929,6 +950,8 @@ def flash_attn_varlen_func(
         deterministic,
         sm_margin,
         return_attn_probs,
+        sinks,
+        sparse_mask_fine
     )
 
 
@@ -967,6 +990,8 @@ def flash_attn_with_kvcache(
     pack_gqa=None,   # Can be tuned for speed
     sm_margin=0,     # Can be tuned if some SMs are used for communication
     return_softmax_lse=False,
+    sinks=None,
+    sparse_mask_fine: Optional[torch.Tensor] = None
 ):
     """
     If k and v are not None, k_cache and v_cache will be updated *inplace* with the new values from
@@ -1062,6 +1087,8 @@ def flash_attn_with_kvcache(
             (q.shape[0],), cache_seqlens, dtype=torch.int32, device=k_cache.device
         )
         cache_seqlens = maybe_contiguous(cache_seqlens)
+    # If sparse_mask is provided, set causal=False (mask handles causality)
+    effective_causal = causal if sparse_mask_fine is None else False
     out, softmax_lse, *rest = _flash_attn_forward(
         q,
         k_cache,
@@ -1085,7 +1112,7 @@ def flash_attn_with_kvcache(
         rotary_seqlens,
         q_descale, k_descale, v_descale,
         softmax_scale,
-        causal=causal,
+        causal=effective_causal,
         window_size_left=window_size[0],
         window_size_right=window_size[1],
         attention_chunk=attention_chunk,
@@ -1095,6 +1122,8 @@ def flash_attn_with_kvcache(
         num_splits=num_splits,
         pack_gqa=pack_gqa,
         sm_margin=sm_margin,
+        sinks=sinks,
+        sparse_mask_fine=sparse_mask_fine
     )
     # return (out, softmax_lse) if return_softmax_lse else out
     return (out, softmax_lse, *rest) if return_softmax_lse else out
@@ -1141,3 +1170,55 @@ def get_scheduler_metadata(
         sm_margin,
     )
     return scheduler_metadata
+
+def get_tile_size(
+    headdim: int,
+    headdim_v: Optional[int] = None,
+    qkv_dtype: torch.dtype = torch.bfloat16,
+    is_causal: bool = False,
+    window_size_left: int = -1,
+    window_size_right: int = -1,
+    has_softcap: bool = False,
+) -> Tuple[int, int]:
+    """
+    Query the tile size (kBlockM, kBlockN) that FlashAttention will use for the given configuration.
+
+    This is essential for generating correctly shaped sparse masks for flash_attn_varlen_func_sparse.
+    The mask shapes depend on kBlockM and kBlockN (for K-block
+    granularity and bitmap alignment).
+
+    Arguments:
+        headdim: int. Head dimension for Q/K.
+        headdim_v: int. Head dimension for V. Default to headdim if None.
+        qkv_dtype: torch.dtype. Data type (torch.float16, torch.bfloat16, torch.float8_e4m3fn).
+        is_causal: bool. Whether causal attention is used.
+        window_size_left: int. Left window size for local attention (-1 = infinite).
+        window_size_right: int. Right window size for local attention (-1 = infinite).
+        has_softcap: bool. Whether softcapping is enabled.
+
+    Returns:
+        Tuple[int, int]: (kBlockM, kBlockN) tile sizes.
+
+    Example:
+        >>> kBlockM, kBlockN = get_tile_size(headdim=192, headdim_v=128, qkv_dtype=torch.bfloat16)
+        >>> print(kBlockM, kBlockN)  # Expected: 128, 128
+        >>>
+        >>> # Use these to compute mask shapes
+        >>> num_int64_per_block = (kBlockN + 63) // 64  # = 2 for kBlockN=128
+        >>> max_k_blocks = (max_seqlen_k + kBlockN - 1) // kBlockN
+        >>> num_q_tiles = (total_q + kBlockM - 1) // kBlockM
+    """
+    # Create a dummy CUDA tensor to trigger PyTorch dispatcher to route to CUDA backend.
+    # This tensor is not actually used, it just helps dispatcher determine the backend.
+    dummy_tensor = torch.empty(0, device="cuda", dtype=qkv_dtype)
+
+    return flash_attn_3_cuda.get_tile_size(
+        dummy_tensor,
+        headdim,
+        headdim_v if headdim_v is not None else headdim,
+        qkv_dtype,
+        is_causal,
+        window_size_left,
+        window_size_right,
+        has_softcap,
+    )

@@ -80,6 +80,15 @@ struct Flash_fwd_params : public Qkv_params {
 
     int *__restrict__ blockmask;
 
+    // Sparse attention fields (for flash_fwd_sparse kernel)
+    const int* block_count;
+    const int* block_offset;
+    const int* column_count;
+    const int* column_index;
+    int NUM_ROWS;
+    int NNZ_S;
+    int NNZ_V;
+
     // The K_new and V_new matrices.
     void * __restrict__ knew_ptr;
     void * __restrict__ vnew_ptr;
